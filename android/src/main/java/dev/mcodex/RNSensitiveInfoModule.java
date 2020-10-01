@@ -30,6 +30,9 @@ import com.facebook.react.bridge.WritableNativeMap;
 import com.facebook.react.bridge.UiThreadUtil;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.security.Key;
 import java.security.KeyPairGenerator;
@@ -45,6 +48,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
 import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -641,8 +645,8 @@ public class RNSensitiveInfoModule extends ReactContextBaseJavaModule {
             c = Cipher.getInstance(RSA_ECB);
             c.init(Cipher.ENCRYPT_MODE, publicKey);
         }
-        byte[] encodedBytes = c.doFinal(bytes);
-        String encryptedBase64Encoded = Base64.encodeToString(encodedBytes, Base64.DEFAULT);
+        final byte[] encryptedBytes = getBytesStreamedThroughCipher(bytes, c);
+        final String encryptedBase64Encoded = Base64.encodeToString(encryptedBytes, Base64.DEFAULT);
         return encryptedBase64Encoded;
     }
 
@@ -664,7 +668,43 @@ public class RNSensitiveInfoModule extends ReactContextBaseJavaModule {
             c = Cipher.getInstance(RSA_ECB);
             c.init(Cipher.DECRYPT_MODE, privateKey);
         }
-        byte[] decodedBytes = c.doFinal(Base64.decode(encrypted, Base64.DEFAULT));
-        return new String(decodedBytes);
+        final byte[] encryptedBytes = Base64.decode(encrypted, Base64.DEFAULT);
+        byte[] decodedBytes = getBytesStreamedThroughCipher(encryptedBytes, c);
+        String decoded = new String(decodedBytes);
+
+        return decoded;
+    }
+
+    /**
+     * For big chunks of data that needs to be either encrypted or decrypted, cipher.doFinal(bytes)
+     * does not work sufficiently and will complain about a block size being illegal. To properly
+     * work with big pieces of data, we need to use input streams.
+     *
+     * @param input An array of bytes that need to be either encrypted or decrypted. The mode
+     *              mode is set during creation of the Cipher.
+     * @param cipher The cipher that is used for encryption or decryption.
+     * @return Encrypted or decrypted bytes from input bytes, depending on the Cipher mode.
+     * @throws IOException
+     */
+    private byte[] getBytesStreamedThroughCipher(byte[] input, Cipher cipher) throws IOException {
+        // Use input streams for big chunks of data
+        final ByteArrayInputStream inputStream = new ByteArrayInputStream(input);
+        final CipherInputStream cipherInputStream = new CipherInputStream(inputStream, cipher);
+
+        // Where the result will be written
+        final ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+
+        // Start reading into a buffer until we're not reading enough data anymore
+        final byte[] buffer = new byte[1024];
+        int read = 0;
+        while (read != -1) {
+            read = cipherInputStream.read(buffer);
+
+            if (read != -1) {
+                byteArrayOutputStream.write(buffer, 0, read);
+            }
+        }
+
+        return byteArrayOutputStream.toByteArray();
     }
 }
